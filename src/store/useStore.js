@@ -13,6 +13,9 @@ import {
   writeBatch
 } from 'firebase/firestore';
 
+// Helper for consistent item matching
+const normalize = (name) => (name || '').trim().toLowerCase();
+
 const useStore = create((set, get) => ({
   // Local State (kept in sync with Firebase)
   inventory: [],
@@ -80,7 +83,6 @@ const useStore = create((set, get) => ({
 
   // Actions (Updated to write to Firestore)
   addOrder: async (order) => {
-    // 1. Prepare inventory updates
     const batch = writeBatch(db);
     const { inventory } = get();
 
@@ -92,14 +94,12 @@ const useStore = create((set, get) => ({
       }
     });
 
-    // 2. Save Order
     const initializedOrder = {
       ...order,
       items: order.items.map(item => ({ ...item, shippedQuantity: 0 })),
       createdAt: new Date().toISOString()
     };
     
-    // Remove temporary ID before saving to let Firestore generate one
     const { id, ...orderToSave } = initializedOrder;
     await addDoc(collection(db, 'orders'), orderToSave);
     await batch.commit();
@@ -122,8 +122,10 @@ const useStore = create((set, get) => ({
     const { inventory } = get();
 
     purchase.items?.forEach(purchaseItem => {
-      const item = inventory.find(i => i.name === purchaseItem.name);
+      const item = inventory.find(i => normalize(i.name) === normalize(purchaseItem.name));
+      
       if (item) {
+        // Update Existing
         const newStock = item.stock + purchaseItem.quantity;
         let status = 'Tersedia';
         if (newStock <= 0) status = 'Habis';
@@ -133,6 +135,20 @@ const useStore = create((set, get) => ({
           stock: newStock, 
           status, 
           costPrice: purchaseItem.price || item.costPrice 
+        });
+      } else {
+        // Create New Inventory Item (Upsert)
+        const newId = `ITEM-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+        batch.set(doc(db, 'inventory', newId), {
+          id: newId,
+          name: purchaseItem.name,
+          category: 'Bahan Baku', // New purchases are typically raw materials
+          stock: purchaseItem.quantity,
+          reserved: 0,
+          unit: purchaseItem.unit,
+          costPrice: purchaseItem.price,
+          price: 0,
+          status: 'Tersedia'
         });
       }
     });
@@ -150,9 +166,10 @@ const useStore = create((set, get) => ({
     const { inventory } = get();
     let totalCost = 0;
     
-    // 1. Process Inputs
+    // 1. Process Inputs (Ingredients)
     const inputsWithCosts = record.inputs.map(input => {
-      const item = inventory.find(i => i.id === input.id);
+      // Find by ID or Name as fallback to ensure stability
+      const item = inventory.find(i => i.id === input.id || normalize(i.name) === normalize(input.name));
       if (item) {
         const itemCost = item.costPrice || 0;
         totalCost += itemCost * input.amount;
@@ -163,16 +180,16 @@ const useStore = create((set, get) => ({
         else if (newStock < 5) status = 'Menipis';
         
         batch.update(doc(db, 'inventory', item.id), { stock: newStock, status });
-        return { ...input, unitCost: itemCost };
+        return { ...input, id: item.id, unitCost: itemCost };
       }
       return input;
     });
 
     const finalizedRecord = { ...record, inputs: inputsWithCosts, totalCost };
 
-    // 2. Process Outputs
+    // 2. Process Outputs (Finished Goods)
     finalizedRecord.outputs.forEach(output => {
-      const item = inventory.find(i => i.name.trim().toLowerCase() === output.name.trim().toLowerCase());
+      const item = inventory.find(i => normalize(i.name) === normalize(output.name));
       const bep = output.amount > 0 ? (totalCost / output.amount) : 0;
       
       if (item) {
@@ -187,9 +204,9 @@ const useStore = create((set, get) => ({
           costPrice: bep, 
           category: output.category || item.category 
         });
+        output.id = item.id;
       } else {
-        // Create new inventory item document
-        const newId = `ITEM-${Date.now()}`;
+        const newId = `ITEM-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
         batch.set(doc(db, 'inventory', newId), {
           id: newId,
           name: output.name,
@@ -201,11 +218,11 @@ const useStore = create((set, get) => ({
           price: 0,
           status: output.amount > 0 ? 'Tersedia' : 'Habis'
         });
+        output.id = newId;
       }
       finalizedRecord.bep = bep;
     });
 
-    // Remove temp id
     const { id, ...prodToSave } = finalizedRecord;
     await addDoc(collection(db, 'production'), prodToSave);
     await batch.commit();
@@ -218,9 +235,8 @@ const useStore = create((set, get) => ({
 
     const batch = writeBatch(db);
 
-    // Revert Stocks
     record.inputs.forEach(input => {
-      const item = inventory.find(i => i.id === input.id);
+      const item = inventory.find(i => i.id === input.id || normalize(i.name) === normalize(input.name));
       if (item) {
         const newStock = item.stock + input.amount;
         let status = 'Tersedia';
@@ -231,7 +247,7 @@ const useStore = create((set, get) => ({
     });
 
     record.outputs.forEach(output => {
-      const item = inventory.find(i => i.name.trim().toLowerCase() === output.name.trim().toLowerCase());
+      const item = inventory.find(i => normalize(i.name) === normalize(output.name));
       if (item) {
         const newStock = Math.max(0, item.stock - output.amount);
         let status = 'Tersedia';
@@ -255,8 +271,7 @@ const useStore = create((set, get) => ({
     const batch = writeBatch(db);
     const { inventory, orders } = get();
 
-    // Update Inventory
-    const item = inventory.find(i => i.name === record.product);
+    const item = inventory.find(i => normalize(i.name) === normalize(record.product));
     if (item) {
       const newStock = item.stock - record.quantity;
       const newReserved = Math.max(0, (item.reserved || 0) - record.quantity);
@@ -266,11 +281,10 @@ const useStore = create((set, get) => ({
       batch.update(doc(db, 'inventory', item.id), { stock: newStock, reserved: newReserved, status });
     }
 
-    // Update Order
     const order = orders.find(o => o.id === record.orderId);
     if (order) {
       const updatedItems = order.items.map(oi => {
-        if (oi.name === record.product) {
+        if (normalize(oi.name) === normalize(record.product)) {
           return { ...oi, shippedQuantity: (oi.shippedQuantity || 0) + record.quantity };
         }
         return oi;
@@ -286,9 +300,8 @@ const useStore = create((set, get) => ({
     await batch.commit();
   },
 
-  // Master Data Actions
   addInventoryItem: async (item) => {
-    const newId = Date.now().toString();
+    const newId = `ITEM-${Date.now()}`;
     await setDoc(doc(db, 'inventory', newId), { ...item, id: newId, stock: 0, reserved: 0, status: 'Habis' });
   },
 
