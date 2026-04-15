@@ -42,7 +42,7 @@ const SidebarItem = ({ icon: Icon, label, active, onClick }) => (
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const { theme, toggleTheme, initFirebaseSync } = useStore();
+  const { theme, toggleTheme, initFirebaseSync, loading } = useStore();
   
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -159,7 +159,14 @@ function App() {
 
         {/* Content */}
         <div style={{ animation: 'fadeIn 0.3s ease-in-out' }}>
-          {renderContent()}
+          {loading ? (
+            <div style={{ height: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem' }}>
+              <div style={{ width: 40, height: 40, border: '4px solid var(--primary-light)', borderTop: '4px solid var(--primary)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+              <p style={{ color: 'var(--text-muted)', fontWeight: '600', animation: 'pulse 1.5s infinite' }}>Menghubungkan ke Cloud...</p>
+            </div>
+          ) : (
+            renderContent()
+          )}
         </div>
       </main>
 
@@ -167,6 +174,14 @@ function App() {
         @keyframes fadeIn {
           from { opacity: 0; transform: translateY(10px); }
           to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
         }
       `}</style>
     </div>

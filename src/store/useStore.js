@@ -46,6 +46,9 @@ const useStore = create((set, get) => ({
       return onSnapshot(q, (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         set({ [stateKey]: data, loading: false });
+      }, (error) => {
+        console.error(`Firebase error [${name}]:`, error);
+        set({ loading: false });
       });
     });
 
@@ -55,8 +58,12 @@ const useStore = create((set, get) => ({
         set({ masterData: snapshot.data() });
       } else {
         // Initialize master data if it doesn't exist
-        setDoc(doc(db, 'settings', 'masterData'), get().masterData);
+        setDoc(doc(db, 'settings', 'masterData'), get().masterData).catch(err => {
+          console.error("Failed to initialize Master Data:", err);
+        });
       }
+    }, (error) => {
+      console.error("Firebase error [masterData]:", error);
     });
 
     return () => {
